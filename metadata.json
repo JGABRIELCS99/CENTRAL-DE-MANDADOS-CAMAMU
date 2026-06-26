@@ -1,0 +1,6 @@
+{
+  "name": "Central de Mandados Camamu",
+  "description": "Sistema de gestão, extração de PDFs e controle de mandados para a comarca de Camamu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
