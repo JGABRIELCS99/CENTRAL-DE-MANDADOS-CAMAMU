@@ -216,6 +216,36 @@ export default function App() {
     ];
   }, [filteredDashboardLinhas]);
 
+  const tempoMedioMetrica = useMemo(() => {
+    let sumDiff = 0;
+    let count = 0;
+    filteredDashboardLinhas.forEach(l => {
+      if (l.citado && l.dataCumprimento) {
+        const start = l.dataRecebimento ? new Date(l.dataRecebimento.split('/').reverse().join('-')) : new Date(l.dataCadastramento || "");
+        const end = new Date(l.dataCumprimento);
+        if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+          const diffTime = Math.abs(end.getTime() - start.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          sumDiff += diffDays;
+          count++;
+        }
+      }
+    });
+    return count > 0 ? Math.round(sumDiff / count) : 0;
+  }, [filteredDashboardLinhas]);
+
+  const tentativasMetrica = useMemo(() => {
+    let sumTentativas = 0;
+    let count = 0;
+    filteredDashboardLinhas.forEach(l => {
+      if (l.citado && l.tentativas && l.tentativas.length > 0) {
+        sumTentativas += l.tentativas.length;
+        count++;
+      }
+    });
+    return count > 0 ? (sumTentativas / count).toFixed(1) : "0";
+  }, [filteredDashboardLinhas]);
+
   const dateMetricsData = useMemo(() => {
     // We group by YYYY-MM-DD
     const dateMap: Record<string, { cadastrados: number, cumpridos: number }> = {};
@@ -422,6 +452,8 @@ export default function App() {
         obs: part.obs || "",
         menorDeIdade: part.menorDeIdade || "",
         dataHoraAudiencia: part.dataHoraAudiencia || "",
+        dataAudiencia: part.dataAudiencia || "",
+        horaAudiencia: part.horaAudiencia || "",
         tipoComunicacao: part.tipoComunicacao || "citacao",
         etiquetas: part.etiquetas || [],
         citado: false,
@@ -430,6 +462,9 @@ export default function App() {
         criadoPorEmail: user?.email || "Anônimo",
         criadoPorUid: user?.uid || "anonimo",
         alvoComunicacao: part.alvoComunicacao !== false, // Default true if undefined
+        prazoDias: part.prazoDias,
+        dataRecebimento: part.dataRecebimento || "",
+        tentativas: part.tentativas || [],
       };
     });
 
@@ -467,6 +502,20 @@ export default function App() {
     }
   };
 
+  const handleDeleteLinhas = async (ids: string[]) => {
+    if (confirm(`Tem certeza que deseja excluir ${ids.length} partes selecionadas?`)) {
+      try {
+        const batch = writeBatch(db);
+        ids.forEach(id => {
+          batch.delete(doc(db, "mandados", id));
+        });
+        await batch.commit();
+      } catch (err) {
+        console.error("Erro ao deletar documentos:", err);
+      }
+    }
+  };
+
   const handleDeleteProcesso = async (numeroProcesso: string) => {
     if (confirm(`Tem certeza que deseja excluir TODOS os registros associados ao processo ${numeroProcesso}?`)) {
       try {
@@ -488,6 +537,18 @@ export default function App() {
       await updateDoc(doc(db, "mandados", id), updatedFields);
     } catch (err) {
       console.error("Erro ao atualizar documento:", err);
+    }
+  };
+
+  const handleUpdateLinhasMulti = async (updates: { id: string, updatedFields: Partial<ProcessoLinha> }[]) => {
+    try {
+      const batch = writeBatch(db);
+      updates.forEach(u => {
+        batch.update(doc(db, "mandados", u.id), u.updatedFields);
+      });
+      await batch.commit();
+    } catch (err) {
+      console.error("Erro ao atualizar documentos em lote:", err);
     }
   };
 
@@ -674,50 +735,72 @@ export default function App() {
               </div>
 
               {/* Big metric cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
                 <div className="bg-amber-50 border border-amber-100 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
                   <div className="absolute right-0 top-0 p-3 text-amber-200 opacity-40 group-hover:scale-110 transition-transform">
                     <Clock size={48} />
                   </div>
-                  <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Pendentes de Citação</p>
+                  <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Pendentes</p>
                   <h3 className="text-3xl font-extrabold text-amber-650 mt-1">
                     {filteredDashboardLinhas.filter(l => !l.citado).length}
                   </h3>
-                  <p className="text-[10px] text-amber-600 mt-1">requerem contato / diligência</p>
+                  <p className="text-[10px] text-amber-600 mt-1">mandados ativos</p>
                 </div>
 
                 <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
                   <div className="absolute right-0 top-0 p-3 text-indigo-200 opacity-40 group-hover:scale-110 transition-transform">
                     <FileText size={48} />
                   </div>
-                  <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">Total de Processos</p>
+                  <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">Processos</p>
                   <h3 className="text-3xl font-extrabold text-indigo-850 mt-1">{totalProcessos}</h3>
-                  <p className="text-[10px] text-indigo-500 mt-1">processos únicos consolidados</p>
+                  <p className="text-[10px] text-indigo-500 mt-1">únicos consolidados</p>
                 </div>
 
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
                   <div className="absolute right-0 top-0 p-3 text-slate-200 opacity-40 group-hover:scale-110 transition-transform">
                     <FolderOpen size={48} />
                   </div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total de Mandados</p>
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Mandados</p>
                   <h3 className="text-3xl font-extrabold text-slate-850 mt-1">{filteredDashboardLinhas.length}</h3>
-                  <p className="text-[10px] text-slate-400 mt-1">partes mapeadas no sistema</p>
+                  <p className="text-[10px] text-slate-400 mt-1">partes no sistema</p>
                 </div>
 
                 <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
                   <div className="absolute right-0 top-0 p-3 text-emerald-200 opacity-40 group-hover:scale-110 transition-transform">
                     <CheckCircle size={48} />
                   </div>
-                  <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Citados (Concluídos)</p>
+                  <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Citados</p>
                   <h3 className="text-3xl font-extrabold text-emerald-650 mt-1">
                     {filteredDashboardLinhas.filter(l => l.citado).length}
                   </h3>
                   <p className="text-[10px] text-emerald-600 mt-1">
                     {filteredDashboardLinhas.length > 0 
-                      ? `${Math.round((filteredDashboardLinhas.filter(l => l.citado).length / filteredDashboardLinhas.length) * 100)}% de taxa de conclusão`
+                      ? `${Math.round((filteredDashboardLinhas.filter(l => l.citado).length / filteredDashboardLinhas.length) * 100)}% de taxa`
                       : "0% concluídos"
                     }
                   </p>
+                </div>
+
+                <div className="bg-purple-50 border border-purple-100 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
+                  <div className="absolute right-0 top-0 p-3 text-purple-200 opacity-40 group-hover:scale-110 transition-transform">
+                    <Clock size={48} />
+                  </div>
+                  <p className="text-[10px] font-bold text-purple-700 uppercase tracking-wider">Tempo Médio</p>
+                  <h3 className="text-3xl font-extrabold text-purple-650 mt-1">
+                    {tempoMedioMetrica}
+                  </h3>
+                  <p className="text-[10px] text-purple-600 mt-1">dias úteis p/ concluir</p>
+                </div>
+
+                <div className="bg-sky-50 border border-sky-100 rounded-2xl p-5 text-center shadow-sm relative overflow-hidden group">
+                  <div className="absolute right-0 top-0 p-3 text-sky-200 opacity-40 group-hover:scale-110 transition-transform">
+                    <Activity size={48} />
+                  </div>
+                  <p className="text-[10px] font-bold text-sky-700 uppercase tracking-wider">Tentativas (Méd.)</p>
+                  <h3 className="text-3xl font-extrabold text-sky-650 mt-1">
+                    {tentativasMetrica}
+                  </h3>
+                  <p className="text-[10px] text-sky-600 mt-1">diligências por mandado</p>
                 </div>
               </div>
             </div>
@@ -961,9 +1044,11 @@ export default function App() {
             <ProcessoTable
               linhas={linhas}
               onDeleteLinha={handleDeleteLinha}
+              onDeleteLinhas={handleDeleteLinhas}
               onDeleteProcesso={handleDeleteProcesso}
               onClearTable={handleClearTable}
               onUpdateLinha={handleUpdateLinha}
+              onUpdateLinhasMulti={handleUpdateLinhasMulti}
               waTemplate={waTemplate}
               linkAudiencia={linkAudiencia}
               etiquetas={etiquetas}
@@ -1000,6 +1085,7 @@ export default function App() {
                     {settingsTab === "whatsapp" && "Modelos de WhatsApp"}
                     {settingsTab === "advogados" && "Lista de Advogados"}
                     {settingsTab === "etiquetas" && "Etiquetas"}
+                    {settingsTab === "roteirizacao" && "Roteirização"}
                   </span>
                 </div>
               )}
@@ -1042,6 +1128,42 @@ export default function App() {
                   <h4 className="text-base font-bold text-slate-800 mb-2">Lista de Advogados</h4>
                   <p className="text-xs text-slate-500 text-center">Cadastrar advogados para monitoramento</p>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab("roteirizacao")}
+                  className="flex flex-col items-center justify-center p-8 border-2 border-slate-200 rounded-2xl hover:border-amber-500 hover:bg-amber-50 transition-all cursor-pointer group shadow-sm hover:shadow-md"
+                >
+                  <div className="p-4 bg-amber-100 text-amber-600 rounded-full mb-4 group-hover:scale-110 transition-transform">
+                    <MapPin size={32} />
+                  </div>
+                  <h4 className="text-base font-bold text-slate-800 mb-2">Roteirização</h4>
+                  <p className="text-xs text-slate-500 text-center">Configurar ponto de partida para rotas</p>
+                </button>
+              </div>
+            )}
+
+            {settingsTab === "roteirizacao" && (
+              <div className="animate-fade-in space-y-6">
+                <div className="bg-amber-50/50 p-6 rounded-2xl border border-amber-100 space-y-4">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">Ponto de Partida Padrão</label>
+                    <input
+                      type="text"
+                      value={localStorage.getItem("pontoPartida") || ""}
+                      onChange={(e) => {
+                        localStorage.setItem("pontoPartida", e.target.value);
+                        // Trigger re-render to reflect change
+                        setSettingsTab("roteirizacao");
+                      }}
+                      placeholder="Ex: Fórum da Comarca de São Paulo, Rua X, 123..."
+                      className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-all text-sm shadow-sm"
+                    />
+                    <p className="text-xs text-slate-500 mt-2">
+                      Este endereço será utilizado como o ponto de partida inicial para a geração de roteiros de diligências no mapa e no PDF.
+                    </p>
+                  </div>
+                </div>
               </div>
             )}
 

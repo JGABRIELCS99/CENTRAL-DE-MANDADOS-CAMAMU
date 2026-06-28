@@ -2,7 +2,7 @@ import React from "react";
 import { motion } from "motion/react";
 import { 
   FileText, CheckCircle2, Trash2, Plus, 
-  MapPin, ShieldAlert, Phone, User, Landmark, HelpCircle, XCircle, Baby, Calendar, ArrowLeft
+  MapPin, ShieldAlert, Phone, User, Landmark, HelpCircle, XCircle, Baby, Calendar, ArrowLeft, ExternalLink, Clock
 } from "lucide-react";
 import { ProcessoExtraido, ParteExtraida } from "../types";
 
@@ -179,7 +179,7 @@ export default function PreviewConfirm({
     procIndex: number, 
     partyIndex: number, 
     field: keyof ParteExtraida, 
-    value: string
+    value: any
   ) => {
     const process = pendingProcesses[procIndex];
     const updatedParties = [...process.partes];
@@ -523,6 +523,43 @@ export default function PreviewConfirm({
                       </select>
                     </div>
 
+                    {/* Prazos Judiciais SLA */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600 flex items-center gap-1 uppercase tracking-tight">
+                        <Calendar size={13} className="text-emerald-600" /> Data de Recebimento
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={10}
+                        value={party.dataRecebimento || ""}
+                        onChange={(e) => {
+                          const formatted = formatBrazilianDate(e.target.value);
+                          handlePartyChange(procIndex, partyIndex, "dataRecebimento", formatted);
+                        }}
+                        placeholder="DD/MM/AAAA"
+                        className="w-full px-3 py-2 border border-slate-300 bg-white text-slate-800 placeholder:text-slate-400 rounded-lg text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner font-semibold"
+                      />
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600 flex items-center gap-1 uppercase tracking-tight">
+                        <Clock size={13} className="text-emerald-600" /> Prazo (Dias)
+                      </label>
+                      <select
+                        value={party.prazoDias || ""}
+                        onChange={(e) => handlePartyChange(procIndex, partyIndex, "prazoDias", e.target.value ? parseInt(e.target.value) : undefined)}
+                        className="w-full px-3 py-2 border border-slate-300 bg-white text-slate-800 rounded-lg text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner font-semibold"
+                      >
+                        <option value="">Sem prazo</option>
+                        <option value="5">5 dias</option>
+                        <option value="15">15 dias</option>
+                        <option value="20">20 dias</option>
+                        <option value="30">30 dias</option>
+                        <option value="45">45 dias</option>
+                        <option value="60">60 dias</option>
+                      </select>
+                    </div>
+
                     {/* Data/Hora da Audiência como 2 campos distintos */}
                     {(party.tipoComunicacao === "audiencia" || party.dataHoraAudiencia || party.dataAudiencia || party.horaAudiencia) && (
                       <>
@@ -641,6 +678,20 @@ export default function PreviewConfirm({
                         className="w-full px-3 py-2 border border-slate-300 bg-white text-slate-800 placeholder:text-slate-400 rounded-lg text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner"
                         required
                       />
+                      {party.endereco && party.endereco.trim().length > 0 && (
+                        <div className="pt-1 flex">
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(party.endereco)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-all text-xs font-semibold cursor-pointer shadow-sm"
+                          >
+                            <MapPin size={12} className="text-emerald-500" />
+                            <span>Abrir Google Maps</span>
+                            <ExternalLink size={11} className="text-emerald-400" />
+                          </a>
+                        </div>
+                      )}
                     </div>
 
                     {/* Sede / Zona Rural */}

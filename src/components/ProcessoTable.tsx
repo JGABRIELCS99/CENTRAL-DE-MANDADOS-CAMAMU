@@ -2,9 +2,10 @@ import React, { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   ArrowUpDown, Search, FileDown, Trash2, Globe, ExternalLink, 
-  Smile, Filter, ChevronUp, ChevronDown, RefreshCw, AlertCircle, Edit2, Check, Baby, Calendar, Send
+  Smile, Filter, ChevronUp, ChevronDown, RefreshCw, AlertCircle, Edit2, Check, Baby, Calendar, Send, MapPin, Clock, Tag, X
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import { parse, addDays, differenceInDays, format } from "date-fns";
 import { ProcessoLinha, Etiqueta, AdvogadoMonitorado } from "../types";
 import { formatWhatsappLink } from "./PreviewConfirm";
 
@@ -50,9 +51,11 @@ export function hasAdv(adv: string | null | undefined): boolean {
 interface ProcessoTableProps {
   linhas: ProcessoLinha[];
   onDeleteLinha: (id: string) => void;
+  onDeleteLinhas?: (ids: string[]) => void;
   onDeleteProcesso: (numero: string) => void;
   onClearTable: () => void;
   onUpdateLinha: (id: string, updatedFields: Partial<ProcessoLinha>) => void;
+  onUpdateLinhasMulti?: (updates: { id: string, updatedFields: Partial<ProcessoLinha> }[]) => void;
   waTemplate: string;
   linkAudiencia: string;
   etiquetas?: Etiqueta[];
@@ -69,9 +72,11 @@ interface SortConfig {
 export default function ProcessoTable({
   linhas,
   onDeleteLinha,
+  onDeleteLinhas,
   onDeleteProcesso,
   onClearTable,
   onUpdateLinha,
+  onUpdateLinhasMulti,
   waTemplate,
   linkAudiencia,
   etiquetas = [],
@@ -155,6 +160,255 @@ export default function ProcessoTable({
   // Expanded state for summary accordion of processes
   const [expandedProcesses, setExpandedProcesses] = useState<Record<string, boolean>>({});
   const [isTableExpanded, setIsTableExpanded] = useState(false);
+
+  // Selected rows for maps routing
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+
+  const toggleRowSelection = (id: string) => {
+    const newSelected = new Set(selectedRows);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedRows(newSelected);
+  };
+
+  const toggleProcessSelection = (procLinhas: ProcessoLinha[], e: React.MouseEvent) => {
+    e.stopPropagation();
+    const allSelected = procLinhas.every(l => selectedRows.has(l.id));
+    const newSelected = new Set(selectedRows);
+    if (allSelected) {
+      procLinhas.forEach(l => newSelected.delete(l.id));
+    } else {
+      procLinhas.forEach(l => newSelected.add(l.id));
+    }
+    setSelectedRows(newSelected);
+  };
+
+  const handleExcluirSelecionados = () => {
+    if (selectedRows.size > 0 && onDeleteLinhas) {
+      onDeleteLinhas(Array.from(selectedRows) as string[]);
+      setSelectedRows(new Set());
+    }
+  };
+
+  const [isRoutingModalOpen, setIsRoutingModalOpen] = useState(false);
+  const [routingList, setRoutingList] = useState<ProcessoLinha[]>([]);
+  const [isTaggingModalOpen, setIsTaggingModalOpen] = useState(false);
+
+  const openRoutingModal = () => {
+    const selected = linhas.filter(l => selectedRows.has(l.id) && l.endereco && l.endereco !== "Não consta nos autos");
+    
+    if (selected.length === 0) {
+      alert("Nenhum endereço válido selecionado para rota.");
+      return;
+    }
+    
+    setRoutingList(selected);
+    setIsRoutingModalOpen(true);
+  };
+
+  const openTaggingModal = () => {
+    if (selectedRows.size === 0) return;
+    setIsTaggingModalOpen(true);
+  };
+
+  const handleApplyTagToSelected = (tagName: string) => {
+    if (!onUpdateLinhasMulti || selectedRows.size === 0) return;
+    const updates = (Array.from(selectedRows) as string[]).map(id => {
+      const linha = linhas.find(l => l.id === id);
+      const currentTags = linha?.etiquetas || [];
+      const newTags = currentTags.includes(tagName) ? currentTags : [...currentTags, tagName];
+      return { id, updatedFields: { etiquetas: newTags } };
+    });
+    onUpdateLinhasMulti(updates);
+    setIsTaggingModalOpen(false);
+    setSelectedRows(new Set()); // Opcional: limpar seleção após etiquetar
+  };
+
+  const handleRemoveTagFromSelected = (tagName: string) => {
+    if (!onUpdateLinhasMulti || selectedRows.size === 0) return;
+    const updates = (Array.from(selectedRows) as string[]).map(id => {
+      const linha = linhas.find(l => l.id === id);
+      const currentTags = linha?.etiquetas || [];
+      const newTags = currentTags.filter(t => t !== tagName);
+      return { id, updatedFields: { etiquetas: newTags } };
+    });
+    onUpdateLinhasMulti(updates);
+    setIsTaggingModalOpen(false);
+    setSelectedRows(new Set());
+  };
+
+  const [pontoPartida, setPontoPartida] = useState(() => localStorage.getItem("pontoPartida") || "");
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
+
+  const handleGenerateRoute = () => {
+    if (routingList.length === 0) return;
+
+    const addresses = [];
+    if (pontoPartida) {
+      addresses.push(pontoPartida);
+    }
+    addresses.push(...routingList.map(l => l.endereco));
+
+    if (addresses.length === 1) {
+      window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addresses[0])}`, '_blank');
+      return;
+    }
+
+    const origin = encodeURIComponent(addresses[0]);
+    const destination = encodeURIComponent(addresses[addresses.length - 1]);
+    const waypoints = addresses.slice(1, -1).map(a => encodeURIComponent(a)).join('|');
+
+    let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
+    if (waypoints) {
+      url += `&waypoints=${waypoints}`;
+    }
+    url += "&dir_action=navigate";
+
+    window.open(url, '_blank');
+  };
+
+  const getCoordinates = async (address: string) => {
+    try {
+      // Use the proxy route to avoid CORS and add user-agent
+      const res = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        return { lat: data[0].lat, lon: data[0].lon };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const getDistance = async (coord1: {lat: string, lon: string}, coord2: {lat: string, lon: string}) => {
+    try {
+      const res = await fetch(`/api/distance?lon1=${coord1.lon}&lat1=${coord1.lat}&lon2=${coord2.lon}&lat2=${coord2.lat}`);
+      const data = await res.json();
+      if (data.routes && data.routes.length > 0) {
+        return data.routes[0].distance / 1000; // returns km
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const handleGeneratePDFRoute = async () => {
+    setIsCalculatingRoute(true);
+    let totalKm = 0;
+    const itemsWithDistances: { item: any, distanceStr: string }[] = [];
+    let pontoPartidaCoordFailed = false;
+    
+    try {
+      let lastCoord = null;
+      
+      if (pontoPartida) {
+        lastCoord = await getCoordinates(pontoPartida);
+        if (!lastCoord) pontoPartidaCoordFailed = true;
+        await new Promise(r => setTimeout(r, 1000)); // Respect nominatim limits
+      }
+
+      for (let i = 0; i < routingList.length; i++) {
+        const item = routingList[i];
+        let distanceStr = "";
+        
+        const currentCoord = await getCoordinates(item.endereco);
+        
+        if (!currentCoord) {
+          distanceStr = "(Distância não calculada: endereço não encontrado no mapa)";
+        } else if (lastCoord) {
+          const dist = await getDistance(lastCoord, currentCoord);
+          if (dist !== null) {
+            totalKm += dist;
+            distanceStr = `${dist.toFixed(1)} km do ponto anterior`;
+          } else {
+            distanceStr = "(Distância não calculada: rota não encontrada)";
+          }
+        } else {
+          // It's the first found point, but no ponto de partida was found/provided
+          distanceStr = "Ponto inicial da rota (nenhuma distância anterior)";
+        }
+
+        if (currentCoord) {
+          lastCoord = currentCoord;
+        }
+        
+        await new Promise(r => setTimeout(r, 1000)); // Respect nominatim limits
+
+        itemsWithDistances.push({ item, distanceStr });
+      }
+    } catch (error) {
+      console.error("Erro ao calcular distâncias", error);
+      if (itemsWithDistances.length < routingList.length) {
+        for (let i = itemsWithDistances.length; i < routingList.length; i++) {
+          itemsWithDistances.push({ item: routingList[i], distanceStr: "" });
+        }
+      }
+    } finally {
+      setIsCalculatingRoute(false);
+    }
+
+    const printWindow = window.open('', '', 'width=800,height=600');
+    if (!printWindow) return;
+    
+    const html = `
+      <html>
+        <head>
+          <title>Roteiro de Diligências</title>
+          <style>
+            body { font-family: sans-serif; padding: 20px; color: #333; }
+            h1 { font-size: 20px; text-transform: uppercase; border-bottom: 2px solid #10b981; padding-bottom: 10px; margin-bottom: 10px; }
+            .header-info { font-size: 14px; margin-bottom: 20px; color: #555; }
+            .item { margin-bottom: 15px; border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
+            .index { font-weight: bold; color: #10b981; font-size: 16px; margin-right: 10px; }
+            .name { font-weight: bold; font-size: 14px; }
+            .process { font-family: monospace; font-size: 12px; color: #666; margin-left: 10px; }
+            .address { margin-top: 5px; font-size: 14px; }
+            .distance { font-size: 12px; color: #0284c7; margin-top: 4px; font-weight: bold; }
+            .obs { margin-top: 5px; font-size: 12px; font-style: italic; color: #555; }
+          </style>
+        </head>
+        <body>
+          <h1>Roteiro de Diligências (${new Date().toLocaleDateString()})</h1>
+          <div class="header-info">
+            <strong>Ponto de Partida:</strong> ${pontoPartida || 'Não definido'}<br/>
+            ${pontoPartidaCoordFailed ? '<span style="color: #ef4444; font-size: 12px; font-weight: bold;">(Não foi possível encontrar o ponto de partida no mapa)</span><br/>' : ''}
+            ${totalKm > 0 ? `<strong>Distância Total Estimada:</strong> ${totalKm.toFixed(1)} km` : ''}
+          </div>
+          ${itemsWithDistances.map((l, i) => `
+            <div class="item">
+              <div>
+                <span class="index">${i + 1}º</span>
+                <span class="name">${l.item.nome}</span>
+                <span class="process">${l.item.numeroProcesso}</span>
+              </div>
+              <div class="address">📍 ${l.item.endereco}</div>
+              ${l.distanceStr ? `<div class="distance">🚗 ${l.distanceStr}</div>` : ''}
+              ${l.item.obs ? `<div class="obs">📝 ${l.item.obs}</div>` : ''}
+            </div>
+          `).join('')}
+          <script>
+            window.onload = function() { window.print(); window.close(); }
+          </script>
+        </body>
+      </html>
+    `;
+    printWindow.document.write(html);
+    printWindow.document.close();
+  };
+
+  const moveRouteItem = (index: number, dir: -1 | 1) => {
+    if (index + dir < 0 || index + dir >= routingList.length) return;
+    const newList = [...routingList];
+    const temp = newList[index];
+    newList[index] = newList[index + dir];
+    newList[index + dir] = temp;
+    setRoutingList(newList);
+  };
 
   // Toggle for opposing counsel visibility
   const [showOpposing, setShowOpposing] = useState<Record<string, boolean>>({});
@@ -529,6 +783,36 @@ export default function ProcessoTable({
               <FileDown size={14} /> Exportar CSV
             </button>
 
+            {selectedRows.size > 0 && (
+              <>
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  onClick={handleExcluirSelecionados}
+                  className="px-4 py-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md tracking-tight transition-all cursor-pointer border border-rose-600"
+                  title="Excluir partes selecionadas"
+                >
+                  <Trash2 size={14} /> Excluir ({selectedRows.size})
+                </motion.button>
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  onClick={openTaggingModal}
+                  className="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md tracking-tight transition-all cursor-pointer border border-blue-600"
+                >
+                  <Tag size={14} /> Etiquetar ({selectedRows.size})
+                </motion.button>
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  onClick={openRoutingModal}
+                  className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md tracking-tight transition-all cursor-pointer border border-amber-600"
+                >
+                  <MapPin size={14} /> Roteirizar ({selectedRows.size})
+                </motion.button>
+              </>
+            )}
+
             <button
               onClick={() => {
                 if (confirm("Deseja realmente limpar toda a relação de processos da sessão? Esta ação é irreversível.")) {
@@ -662,9 +946,45 @@ export default function ProcessoTable({
                   className="w-full flex items-center justify-between p-4 bg-slate-50/50 hover:bg-slate-100/60 text-left transition-all cursor-pointer focus:outline-none"
                 >
                   <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={proc.linhas.length > 0 && proc.linhas.every(l => selectedRows.has(l.id))}
+                        ref={(el) => {
+                          if (el) {
+                            const someSelected = proc.linhas.some(l => selectedRows.has(l.id));
+                            const allSelected = proc.linhas.every(l => selectedRows.has(l.id));
+                            el.indeterminate = someSelected && !allSelected;
+                          }
+                        }}
+                        onChange={(e) => toggleProcessSelection(proc.linhas, e as any)}
+                        className="h-4 w-4 rounded text-amber-500 focus:ring-amber-500 bg-white border-slate-300 cursor-pointer mr-3"
+                        title="Selecionar todas as partes deste processo"
+                      />
+                    </div>
                     <span className="font-mono text-sm font-extrabold text-slate-800 tracking-wide">
                       PROCESSO: {proc.numeroProcesso}
                     </span>
+                    
+                    {/* Exibir etiquetas exclusivas do processo */}
+                    {Array.from(new Set(proc.linhas.flatMap(l => l.etiquetas || []))).length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {Array.from(new Set(proc.linhas.flatMap(l => l.etiquetas || []))).map((tagName: any) => {
+                          const etqDef = etiquetas.find(e => e.nome.toLowerCase() === tagName.toLowerCase());
+                          const color = etqDef?.cor || "#64748b";
+                          return (
+                            <span 
+                              key={tagName} 
+                              className="px-1.5 py-0.5 text-[9px] font-bold border rounded-md shadow-sm"
+                              style={{ backgroundColor: `${color}15`, color: color, borderColor: `${color}30` }}
+                            >
+                              {tagName}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-0.5 rounded-full font-bold">
                       {proc.linhas.length} {proc.linhas.length === 1 ? "parte localizada" : "partes localizadas"}
                     </span>
@@ -795,6 +1115,40 @@ export default function ProcessoTable({
                                 </div>
 
                                 <div>
+                                  <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider">Etiquetas / Tags</label>
+                                  <input
+                                    type="text"
+                                    value={editValues.etiquetas ? editValues.etiquetas.join(", ") : ""}
+                                    onChange={(e) => setEditValues({ 
+                                      ...editValues, 
+                                      etiquetas: e.target.value.split(",").map(x => x.trim()).filter(Boolean) 
+                                    })}
+                                    placeholder="Ex: Urgente, Réu Preso (separadas por vírgula)"
+                                    className="mt-1 w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs text-slate-800 focus:ring-1 focus:ring-emerald-500 shadow-inner"
+                                  />
+                                  {etiquetas.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                      {etiquetas.map(e => (
+                                        <button
+                                          key={e.id}
+                                          type="button"
+                                          onClick={() => {
+                                            const current = editValues.etiquetas || [];
+                                            if (!current.includes(e.nome)) {
+                                              setEditValues({ ...editValues, etiquetas: [...current, e.nome] });
+                                            }
+                                          }}
+                                          className="px-2 py-0.5 text-[9px] font-bold border rounded-md hover:bg-slate-50 transition-colors shadow-sm"
+                                          style={{ color: e.cor, borderColor: e.cor }}
+                                        >
+                                          + {e.nome}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div>
                                   <label className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider">Data/Hora Audiência</label>
                                   <input
                                     type="text"
@@ -843,6 +1197,63 @@ export default function ProcessoTable({
                                     rows={2}
                                     className="mt-1 w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs text-slate-800 leading-tight focus:ring-1 focus:ring-emerald-500 shadow-inner"
                                   />
+                                </div>
+
+                                <div className="border-t border-slate-200 pt-3 space-y-2">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Histórico de Tentativas</span>
+                                  {(editValues.tentativas || []).map((t, idx) => (
+                                    <div key={t.id} className="bg-slate-50 border border-slate-200 rounded-lg p-2 flex flex-col gap-1.5">
+                                      <div className="flex justify-between items-center">
+                                        <input 
+                                          type="text" 
+                                          value={t.dataHora} 
+                                          onChange={(e) => {
+                                            const newTentativas = [...(editValues.tentativas || [])];
+                                            newTentativas[idx].dataHora = e.target.value;
+                                            setEditValues({ ...editValues, tentativas: newTentativas });
+                                          }}
+                                          className="text-xs px-2 py-1 border border-slate-300 rounded-md w-[130px] font-mono shadow-inner"
+                                          placeholder="Data/Hora"
+                                        />
+                                        <button
+                                          onClick={() => {
+                                            const newTentativas = (editValues.tentativas || []).filter((_, i) => i !== idx);
+                                            setEditValues({ ...editValues, tentativas: newTentativas });
+                                          }}
+                                          className="text-rose-500 hover:text-rose-700 p-1"
+                                        >
+                                          <Trash2 size={14} />
+                                        </button>
+                                      </div>
+                                      <textarea
+                                        value={t.observacao}
+                                        onChange={(e) => {
+                                          const newTentativas = [...(editValues.tentativas || [])];
+                                          newTentativas[idx].observacao = e.target.value;
+                                          setEditValues({ ...editValues, tentativas: newTentativas });
+                                        }}
+                                        className="text-xs px-2 py-1.5 border border-slate-300 rounded-md w-full h-12 shadow-inner"
+                                        placeholder="Resultado da diligência..."
+                                      />
+                                    </div>
+                                  ))}
+                                  
+                                  <button
+                                    onClick={() => {
+                                      const nova: any = {
+                                        id: Math.random().toString(36).substring(2),
+                                        dataHora: format(new Date(), "dd/MM HH:mm"),
+                                        observacao: ""
+                                      };
+                                      setEditValues({ 
+                                        ...editValues, 
+                                        tentativas: [...(editValues.tentativas || []), nova] 
+                                      });
+                                    }}
+                                    className="w-full py-1.5 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors border border-slate-200 shadow-sm"
+                                  >
+                                    + Registrar Nova Tentativa
+                                  </button>
                                 </div>
 
                                 <div className="flex items-center gap-2 pt-2">
@@ -1006,6 +1417,46 @@ export default function ProcessoTable({
                                       {linha.sedeZonaRural}
                                     </span>
                                   </div>
+                                  
+                                  {/* Tipo Comunicação e Etiquetas */}
+                                  <div className="flex flex-col gap-1.5 pt-1">
+                                    <h4 className="text-[9px] font-bold text-slate-450 uppercase tracking-widest leading-none">Classificação</h4>
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className={`inline-flex px-2 py-0.5 text-[9px] font-extrabold rounded-md uppercase tracking-wider border ${
+                                        linha.tipoComunicacao === "audiencia"
+                                          ? "bg-purple-100 text-purple-800 border-purple-200"
+                                          : linha.tipoComunicacao === "penhora"
+                                          ? "bg-amber-100 text-amber-800 border-amber-200"
+                                          : linha.tipoComunicacao === "intimacao"
+                                          ? "bg-teal-100 text-teal-800 border-teal-200"
+                                          : "bg-blue-100 text-blue-800 border-blue-200" // citacao
+                                      }`}>
+                                        {linha.tipoComunicacao === "audiencia"
+                                          ? "Audiência"
+                                          : linha.tipoComunicacao === "penhora"
+                                          ? "Penhora"
+                                          : linha.tipoComunicacao === "intimacao"
+                                          ? "Intimação"
+                                          : "Citação"}
+                                      </span>
+
+                                      {linha.etiquetas && linha.etiquetas.length > 0 && (
+                                        linha.etiquetas.map((tagName, tIdx) => {
+                                          const etqDef = etiquetas.find(e => e.nome.toLowerCase() === tagName.toLowerCase());
+                                          const color = etqDef?.cor || "#64748b"; // default slate-500
+                                          return (
+                                            <span 
+                                              key={tIdx} 
+                                              className="inline-block px-1.5 py-0.5 text-[8px] font-bold border rounded-md shadow-sm"
+                                              style={{ backgroundColor: `${color}15`, color: color, borderColor: `${color}30` }}
+                                            >
+                                              {tagName}
+                                            </span>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </div>
 
                                   {/* Endereço */}
                                   <div>
@@ -1013,15 +1464,45 @@ export default function ProcessoTable({
                                     <p className="text-xs text-slate-750 leading-relaxed mt-1 bg-slate-50/50 p-1.5 rounded border border-slate-100 shadow-inner">
                                       {linha.endereco || <span className="text-slate-400 italic">Não consta no documento</span>}
                                     </p>
+                                    {linha.endereco && linha.endereco.trim().length > 0 && (
+                                      <div className="mt-1.5 flex">
+                                        <a
+                                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(linha.endereco)}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded text-[10px] font-semibold transition-all cursor-pointer shadow-sm"
+                                        >
+                                          <MapPin size={11} className="text-emerald-500" />
+                                          <span>Abrir Google Maps</span>
+                                          <ExternalLink size={10} className="text-emerald-400" />
+                                        </a>
+                                      </div>
+                                    )}
                                   </div>
 
                                   {/* Observações */}
-                                  {linha.obs && (
+                                  {(linha.obs || (linha.tentativas && linha.tentativas.length > 0)) && (
                                     <div className="pt-2 border-t border-slate-150">
-                                      <h4 className="text-[9px] font-bold text-slate-450 uppercase tracking-widest leading-none">Observações / Alertas</h4>
-                                      <p className="text-xs text-slate-600 leading-normal mt-1 italic">
-                                        {linha.obs}
-                                      </p>
+                                      {linha.obs && (
+                                        <>
+                                          <h4 className="text-[9px] font-bold text-slate-450 uppercase tracking-widest leading-none">Observações / Alertas</h4>
+                                          <p className="text-xs text-slate-600 leading-normal mt-1 italic whitespace-pre-line mb-2">
+                                            {linha.obs}
+                                          </p>
+                                        </>
+                                      )}
+                                      
+                                      {linha.tentativas && linha.tentativas.length > 0 && (
+                                        <div className="mt-2 space-y-1">
+                                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Histórico de Tentativas de Diligência:</span>
+                                          {linha.tentativas.map((t, idx) => (
+                                            <div key={t.id} className="bg-orange-50 border border-orange-100 rounded p-1.5 text-xs">
+                                              <strong className="text-orange-700">{idx + 1}ª Tentativa ({t.dataHora}):</strong>
+                                              <span className="text-orange-900 block mt-0.5 whitespace-pre-line leading-tight">{t.observacao}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -1111,7 +1592,23 @@ export default function ProcessoTable({
                   <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                <th className="py-4 px-4 text-center w-14">Nº</th>
+                <th className="py-4 px-4 text-center w-10">
+                  <input 
+                    type="checkbox"
+                    className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 bg-white border-slate-300 cursor-pointer"
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const allIds = filteredAndSortedLinhas.map(l => l.id);
+                        setSelectedRows(new Set(allIds));
+                      } else {
+                        setSelectedRows(new Set());
+                      }
+                    }}
+                    checked={filteredAndSortedLinhas.length > 0 && selectedRows.size === filteredAndSortedLinhas.length}
+                    title="Selecionar Todos para Roteirização"
+                  />
+                </th>
+                <th className="py-4 px-2 text-center w-14">Nº</th>
                 <th className="py-4 px-4 text-center w-24 whitespace-nowrap">Citado?</th>
                 <th 
                   onClick={() => requestSort("numeroProcesso")} 
@@ -1175,8 +1672,17 @@ export default function ProcessoTable({
                       exit={{ opacity: 0, x: -20 }}
                       className={`${rowBg} group transition-colors text-xs text-slate-700`}
                     >
+                      <td className="py-3 px-4 text-center border-r border-slate-100">
+                        <input
+                          type="checkbox"
+                          checked={selectedRows.has(linha.id)}
+                          onChange={() => toggleRowSelection(linha.id)}
+                          className="h-4 w-4 rounded text-amber-500 focus:ring-amber-500 bg-white border-slate-300 cursor-pointer transition-all"
+                          title="Selecionar para Roteirização (Google Maps)"
+                        />
+                      </td>
                       {/* Process seq automatic numbering */}
-                      <td className="py-3 px-4 text-center font-mono font-bold text-slate-400 border-r border-slate-100">
+                      <td className="py-3 px-2 text-center font-mono font-bold text-slate-400 border-r border-slate-100">
                         {linha.processoSeq}
                       </td>
 
@@ -1383,6 +1889,39 @@ export default function ProcessoTable({
                                 })}
                               </div>
                             )}
+
+                            {/* SLA Visualization */}
+                            {linha.dataRecebimento && linha.prazoDias && !linha.citado && (
+                              <div className="pt-1.5">
+                                {(() => {
+                                  try {
+                                    // Parse dataRecebimento (DD/MM/AAAA)
+                                    const parsedDate = parse(linha.dataRecebimento, "dd/MM/yyyy", new Date());
+                                    const deadline = addDays(parsedDate, linha.prazoDias);
+                                    const daysLeft = differenceInDays(deadline, new Date());
+                                    
+                                    let colorClass = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                                    let iconColor = "text-emerald-500";
+                                    if (daysLeft < 0) {
+                                      colorClass = "bg-rose-50 text-rose-700 border-rose-200";
+                                      iconColor = "text-rose-500";
+                                    } else if (daysLeft <= 5) {
+                                      colorClass = "bg-amber-50 text-amber-700 border-amber-200";
+                                      iconColor = "text-amber-500";
+                                    }
+
+                                    return (
+                                      <div className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded-md text-[9px] font-bold shadow-sm ${colorClass}`}>
+                                        <Clock size={10} className={iconColor} />
+                                        {daysLeft < 0 ? `Atrasado ${Math.abs(daysLeft)}d` : `Prazo: ${daysLeft}d`}
+                                      </div>
+                                    );
+                                  } catch (e) {
+                                    return null;
+                                  }
+                                })()}
+                              </div>
+                            )}
                           </div>
                         )}
                       </td>
@@ -1495,7 +2034,23 @@ export default function ProcessoTable({
                             className="px-2 py-1 border border-slate-300 rounded text-xs bg-white text-slate-800 w-full leading-tight shadow-inner"
                           />
                         ) : (
-                          linha.endereco || <span className="font-mono text-slate-400">NÃO CONSTA</span>
+                          <div className="space-y-1">
+                            <span>{linha.endereco || <span className="font-mono text-slate-400">NÃO CONSTA</span>}</span>
+                            {linha.endereco && linha.endereco.trim().length > 0 && (
+                              <div className="flex">
+                                <a
+                                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(linha.endereco)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 rounded text-[9.5px] font-semibold transition-all cursor-pointer whitespace-nowrap"
+                                >
+                                  <MapPin size={10} className="text-emerald-500" />
+                                  <span>Google Maps</span>
+                                  <ExternalLink size={9} className="text-emerald-400" />
+                                </a>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
 
@@ -1521,17 +2076,91 @@ export default function ProcessoTable({
                         )}
                       </td>
 
-                      {/* Observações */}
+                      {/* Observações e Tentativas */}
                       <td className="py-3 px-4 text-xs text-slate-650 leading-normal max-w-[300px]">
                         {editingId === linha.id ? (
-                          <textarea
-                            value={editValues.obs || ""}
-                            onChange={(e) => setEditValues({ ...editValues, obs: e.target.value })}
-                            rows={2}
-                            className="px-2 py-1 border border-slate-300 rounded text-xs bg-white text-slate-800 w-full leading-tight shadow-inner"
-                          />
+                          <div className="space-y-2">
+                            <textarea
+                              value={editValues.obs || ""}
+                              onChange={(e) => setEditValues({ ...editValues, obs: e.target.value })}
+                              rows={2}
+                              className="px-2 py-1 border border-slate-300 rounded text-xs bg-white text-slate-800 w-full leading-tight shadow-inner"
+                              placeholder="Observações gerais..."
+                            />
+                            
+                            <div className="border-t border-slate-200 pt-2 space-y-2">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Histórico de Tentativas</span>
+                              {(editValues.tentativas || []).map((t, idx) => (
+                                <div key={t.id} className="bg-slate-50 border border-slate-200 rounded p-1.5 flex flex-col gap-1">
+                                  <div className="flex justify-between items-center">
+                                    <input 
+                                      type="text" 
+                                      value={t.dataHora} 
+                                      onChange={(e) => {
+                                        const newTentativas = [...(editValues.tentativas || [])];
+                                        newTentativas[idx].dataHora = e.target.value;
+                                        setEditValues({ ...editValues, tentativas: newTentativas });
+                                      }}
+                                      className="text-[10px] px-1 py-0.5 border border-slate-200 rounded w-[110px]"
+                                      placeholder="Data/Hora"
+                                    />
+                                    <button
+                                      onClick={() => {
+                                        const newTentativas = (editValues.tentativas || []).filter((_, i) => i !== idx);
+                                        setEditValues({ ...editValues, tentativas: newTentativas });
+                                      }}
+                                      className="text-rose-500 hover:text-rose-700"
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
+                                  <textarea
+                                    value={t.observacao}
+                                    onChange={(e) => {
+                                      const newTentativas = [...(editValues.tentativas || [])];
+                                      newTentativas[idx].observacao = e.target.value;
+                                      setEditValues({ ...editValues, tentativas: newTentativas });
+                                    }}
+                                    className="text-[10px] px-1 py-0.5 border border-slate-200 rounded w-full h-10"
+                                    placeholder="Resultado da diligência..."
+                                  />
+                                </div>
+                              ))}
+                              
+                              <button
+                                onClick={() => {
+                                  const nova: any = {
+                                    id: Math.random().toString(36).substring(2),
+                                    dataHora: format(new Date(), "dd/MM HH:mm"),
+                                    observacao: ""
+                                  };
+                                  setEditValues({ 
+                                    ...editValues, 
+                                    tentativas: [...(editValues.tentativas || []), nova] 
+                                  });
+                                }}
+                                className="w-full py-1 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors"
+                              >
+                                + Registrar Nova Tentativa
+                              </button>
+                            </div>
+                          </div>
                         ) : (
-                          <span className="whitespace-pre-line text-slate-605">{linha.obs || "-"}</span>
+                          <div className="space-y-1.5">
+                            <span className="whitespace-pre-line text-slate-605 block">{linha.obs || "-"}</span>
+                            
+                            {linha.tentativas && linha.tentativas.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Histórico de Diligências:</span>
+                                {linha.tentativas.map((t, idx) => (
+                                  <div key={t.id} className="bg-orange-50 border border-orange-100 rounded px-1.5 py-1 text-[9.5px]">
+                                    <strong className="text-orange-700">{idx + 1}ª Tentativa ({t.dataHora}):</strong>
+                                    <span className="text-orange-900 block mt-0.5 leading-tight">{t.observacao}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
 
@@ -1585,6 +2214,190 @@ export default function ProcessoTable({
         )}
       </AnimatePresence>
     </div>
+
+    {/* Tagging Modal */}
+    <AnimatePresence>
+      {isTaggingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col"
+          >
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <Tag size={18} className="text-blue-500" /> Etiquetar Partes ({selectedRows.size} selecionadas)
+              </h2>
+              <button
+                onClick={() => setIsTaggingModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors p-1"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="p-6 bg-slate-50">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">Escolha uma etiqueta:</h3>
+              <div className="flex flex-wrap gap-2">
+                {etiquetas && etiquetas.length > 0 ? (
+                  etiquetas.map(etq => (
+                    <div key={etq.id} className="flex gap-1 items-center bg-white border rounded-lg p-1.5 shadow-sm">
+                      <span 
+                        className="px-2 py-1 text-xs font-bold rounded"
+                        style={{ backgroundColor: `${etq.cor}15`, color: etq.cor, borderColor: `${etq.cor}30` }}
+                      >
+                        {etq.nome}
+                      </span>
+                      <button
+                        onClick={() => handleApplyTagToSelected(etq.nome)}
+                        className="px-2 py-1 text-[10px] font-bold bg-blue-50 text-blue-600 hover:bg-blue-100 rounded"
+                        title="Adicionar"
+                      >
+                        Adicionar
+                      </button>
+                      <button
+                        onClick={() => handleRemoveTagFromSelected(etq.nome)}
+                        className="px-2 py-1 text-[10px] font-bold bg-rose-50 text-rose-600 hover:bg-rose-100 rounded"
+                        title="Remover"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">Nenhuma etiqueta cadastrada no sistema. Vá em Configurações para adicionar.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-white flex justify-end">
+              <button
+                onClick={() => setIsTaggingModalOpen(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Fechar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* Routing Modal */}
+    <AnimatePresence>
+      {isRoutingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]"
+          >
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <MapPin size={18} className="text-amber-500" /> Roteirização de Diligências
+              </h2>
+              <button
+                onClick={() => setIsRoutingModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors p-1"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="p-4 overflow-y-auto flex-1 bg-slate-50">
+              <div className="mb-5 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                  <MapPin size={12} className="text-emerald-500" /> Ponto de Partida (Opcional)
+                </label>
+                <input 
+                  type="text" 
+                  value={pontoPartida} 
+                  onChange={(e) => {
+                    setPontoPartida(e.target.value);
+                    localStorage.setItem("pontoPartida", e.target.value);
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="Ex: Fórum da Comarca, Endereço de início..."
+                />
+                <p className="text-[9px] text-slate-400 mt-1.5">
+                  Será usado como origem da rota e base para o cálculo de distâncias no PDF.
+                </p>
+              </div>
+
+              <p className="text-xs text-slate-500 mb-4 px-1">
+                Arraste ou use as setas para alterar a ordem das diligências antes de gerar a rota.
+              </p>
+              
+              <div className="space-y-2">
+                {routingList.map((item, idx) => (
+                  <div key={item.id} className="bg-white border border-slate-200 rounded-xl p-3 flex gap-3 items-center shadow-sm relative">
+                    <div className="flex flex-col gap-1 items-center justify-center text-slate-400">
+                      <button 
+                        onClick={() => moveRouteItem(idx, -1)}
+                        disabled={idx === 0}
+                        className="hover:text-emerald-600 disabled:opacity-30 disabled:hover:text-slate-400 transition-colors p-0.5"
+                      >
+                        <ChevronUp size={16} />
+                      </button>
+                      <span className="text-[10px] font-bold text-slate-300">{idx + 1}</span>
+                      <button 
+                        onClick={() => moveRouteItem(idx, 1)}
+                        disabled={idx === routingList.length - 1}
+                        className="hover:text-emerald-600 disabled:opacity-30 disabled:hover:text-slate-400 transition-colors p-0.5"
+                      >
+                        <ChevronDown size={16} />
+                      </button>
+                    </div>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2">
+                        <h4 className="text-sm font-bold text-slate-800 truncate">{item.nome}</h4>
+                        <span className="text-[10px] font-mono text-slate-500">{item.numeroProcesso}</span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-1 line-clamp-2">{item.endereco}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-white flex justify-end gap-3">
+              <button
+                onClick={() => setIsRoutingModalOpen(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                disabled={isCalculatingRoute}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleGeneratePDFRoute}
+                disabled={isCalculatingRoute}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-2 disabled:opacity-70"
+              >
+                {isCalculatingRoute ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" /> Calculando...
+                  </>
+                ) : (
+                  <>
+                    <FileDown size={14} /> Gerar PDF
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleGenerateRoute}
+                disabled={isCalculatingRoute}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-lg text-xs font-bold shadow-md shadow-amber-500/20 transition-all flex items-center gap-2 disabled:opacity-70"
+              >
+                <MapPin size={14} /> Abrir no Google Maps
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
   </div>
   );
 }

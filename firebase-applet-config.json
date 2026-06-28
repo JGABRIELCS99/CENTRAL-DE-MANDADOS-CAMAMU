@@ -1,10 +1,9 @@
 {
-  "projectId": "annular-gasket-sr6mz",
-  "appId": "1:377593347609:web:5cbcc63fab6eb651b33488",
-  "apiKey": "AIzaSyCeVj9mAffHXqV-1lpo8ZXksfWlbpnpqLM",
-  "authDomain": "annular-gasket-sr6mz.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-c125e129-6736-4a2d-8919-de66c79f4a36",
-  "storageBucket": "annular-gasket-sr6mz.firebasestorage.app",
-  "messagingSenderId": "377593347609",
-  "measurementId": ""
+  "apiKey": "AIzaSyCv5-1YFAyz8yuj02pDtHRyou8b3gbw3rE",
+  "authDomain": "centraldemandadoscamamu.firebaseapp.com",
+  "projectId": "centraldemandadoscamamu",
+  "storageBucket": "centraldemandadoscamamu.firebasestorage.app",
+  "messagingSenderId": "116250682228",
+  "appId": "1:116250682228:web:e523f89f74f4a2a8214221",
+  "measurementId": "G-001B8DNBLY"
 }

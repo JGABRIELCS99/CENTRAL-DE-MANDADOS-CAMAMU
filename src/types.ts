@@ -1,3 +1,9 @@
+export interface TentativaDiligencia {
+  id: string;
+  dataHora: string; // ISO format or formatted string
+  observacao: string;
+}
+
 export interface ParteExtraida {
   nome: string;
   polo: string;
@@ -13,6 +19,9 @@ export interface ParteExtraida {
   tipoComunicacao?: "audiencia" | "citacao" | "penhora" | "intimacao"; // Tipo de comunicação
   etiquetas?: string[]; // Etiquetas / marcadores
   alvoComunicacao?: boolean;
+  prazoDias?: number;
+  dataRecebimento?: string;
+  tentativas?: TentativaDiligencia[];
 }
 
 export interface AdvogadoMonitorado {
@@ -65,4 +74,7 @@ export interface ProcessoLinha {
   criadoPorEmail?: string; // Email of user who registered this process row
   criadoPorUid?: string; // UID of user who registered this process row
   alvoComunicacao?: boolean;
+  prazoDias?: number;
+  dataRecebimento?: string; // (DD/MM/AAAA) ou ISO
+  tentativas?: TentativaDiligencia[];
 }

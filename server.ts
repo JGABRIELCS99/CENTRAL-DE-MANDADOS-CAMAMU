@@ -195,6 +195,69 @@ app.post("/api/extract", async (req, res) => {
   }
 });
 
+// Geocode Proxy Route
+app.get("/api/geocode", async (req, res) => {
+  try {
+    const address = req.query.address as string;
+    if (!address) {
+      return res.status(400).json({ error: "O endereço é obrigatório." });
+    }
+
+    // Try finding the exact address first
+    let response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`, {
+      headers: {
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        "User-Agent": "TJBA-Assistant/1.0"
+      }
+    });
+    
+    let data;
+    try {
+      data = await response.json();
+    } catch (e) {
+      data = null;
+    }
+
+    // Fallback: If not found, try appending 'Brasil' to give more context
+    if (!data || data.length === 0) {
+      const fallbackQuery = `${address}, Brasil`;
+      response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackQuery)}&limit=1`, {
+        headers: {
+          "Accept-Language": "pt-BR,pt;q=0.9",
+          "User-Agent": "TJBA-Assistant/1.0"
+        }
+      });
+      try {
+        data = await response.json();
+      } catch (e) {
+        data = [];
+      }
+    }
+    
+    return res.json(data);
+  } catch (error: any) {
+    console.error("Geocode error:", error);
+    return res.status(500).json({ error: "Failed to fetch coordinates" });
+  }
+});
+
+// Distance Proxy Route (OSRM)
+app.get("/api/distance", async (req, res) => {
+  try {
+    const { lon1, lat1, lon2, lat2 } = req.query;
+    if (!lon1 || !lat1 || !lon2 || !lat2) {
+      return res.status(400).json({ error: "Coordenadas obrigatórias." });
+    }
+
+    const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${lon2},${lat2}?overview=false`);
+    const data = await response.json();
+    return res.json(data);
+  } catch (error: any) {
+    console.error("Distance error:", error);
+    return res.status(500).json({ error: "Failed to fetch distance" });
+  }
+});
+
 // Serve frontend assets
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
